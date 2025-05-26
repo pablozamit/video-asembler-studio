@@ -80,26 +80,92 @@ app.post('/api/generate-video', upload, async (req, res) => {
 
     const quality = videoQualitySettings[videoQuality] || videoQualitySettings.medium;
     
+    // Crear archivos temporales para FFmpeg
+    const tempFiles = [];
+    const createTempFile = (buffer, ext) => {
+      const tempPath = path.join(tempDir, `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.${ext}`);
+      fs.writeFileSync(tempPath, buffer);
+      tempFiles.push(tempPath);
+      return tempPath;
+    };
+
+    // Crear archivos temporales
+    const bgImagePath = createTempFile(bgImage.buffer, path.extname(bgImage.originalname).substring(1) || 'png');
+    const voiceAudioPath = createTempFile(voiceAudio.buffer, path.extname(voiceAudio.originalname).substring(1) || 'mp3');
+    
     // Configurar FFmpeg
     const command = ffmpeg()
-      .input(bgImage[0].path)
-      .input(voiceAudio[0].path)
+      .input(bgImagePath)
+      .input(voiceAudioPath)
       .inputOptions(['-loop 1'])
       .outputOptions(['-c:v', 'libx264'])
       .outputOptions(['-b:v', quality.bitrate])
       .outputOptions(['-preset', quality.preset])
       .outputOptions(['-c:a', 'aac'])
       .outputOptions(['-pix_fmt', 'yuv420p'])
-      .outputOptions(['-shortest']); // Esto hará que el video dure lo mismo que el audio más largo
+      .outputOptions(['-shortest']);
 
     // Si hay música de fondo, añadirla con el volumen especificado
     if (bgMusic) {
-      command.input(bgMusic[0].path)
+      const bgMusicPath = createTempFile(bgMusic.buffer, path.extname(bgMusic.originalname).substring(1) || 'mp3');
+      command.input(bgMusicPath)
         .outputOptions([
           '-filter_complex',
           `[1:a]volume=${audioVolume}[voice];[2:a]volume=${audioVolume * musicVolumeRatio}[music];[voice][music]amix=inputs=2:duration=longest`
         ]);
     }
+
+    // Función para limpiar archivos temporales
+    const cleanupTempFiles = () => {
+      tempFiles.forEach(file => {
+        try {
+          if (fs.existsSync(file)) {
+            fs.unlinkSync(file);
+          }
+        } catch (e) {
+          console.error('Error al eliminar archivo temporal:', e);
+        }
+      });
+    };
+
+    // Configurar manejadores de eventos
+    command
+      .on('start', (commandLine) => {
+        console.log('Iniciando generación de video:', commandLine);
+      })
+      .on('progress', (progress) => {
+        console.log('Progreso:', progress.percent, '%');
+      })
+      .on('end', () => {
+        console.log('Video generado exitosamente');
+        // Enviar el video generado
+        res.download(outputPath, `video.${outputFormat}`, (err) => {
+          // Limpiar archivos temporales
+          cleanupTempFiles();
+          if (err) {
+            console.error('Error al enviar el archivo:', err);
+          }
+          // Eliminar el archivo de salida
+          try {
+            if (fs.existsSync(outputPath)) {
+              fs.unlinkSync(outputPath);
+            }
+          } catch (e) {
+            console.error('Error al eliminar archivo de salida:', e);
+          }
+        });
+      })
+      .on('error', (err) => {
+        console.error('Error al generar el video:', err);
+        cleanupTempFiles();
+        res.status(500).json({ 
+          error: 'Error al generar el video',
+          details: err.message
+        });
+      });
+
+    // Iniciar la generación del video
+    command.save(outputPath);
 
     command.save(outputPath)
       .on('start', (commandLine) => {
