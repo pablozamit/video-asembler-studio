@@ -93,39 +93,34 @@ app.post('/api/generate-video', upload, async (req, res) => {
     const bgImagePath = createTempFile(bgImage.buffer, path.extname(bgImage.originalname).substring(1) || 'png');
     const voiceAudioPath = createTempFile(voiceAudio.buffer, path.extname(voiceAudio.originalname).substring(1) || 'mp3');
     
-    // Configurar FFmpeg con opciones optimizadas
+    // Configuración ultra ligera para Render
     const command = ffmpeg()
-      // Configurar la imagen de fondo
+      // Usar la imagen como fondo con bucle
       .input(bgImagePath)
       .inputOptions([
         '-loop 1',
-        '-framerate 1',  // Reducir el framerate de entrada
-        '-f image2',
-        '-thread_queue_size 512'  // Reducir el tamaño de la cola
+        '-framerate 1',
+        '-f image2'
       ])
       // Agregar el audio de voz
       .input(voiceAudioPath)
-      .inputOptions([
-        '-thread_queue_size 512'
-      ])
-      // Configurar opciones de salida optimizadas
+      // Configuración de salida mínima
       .outputOptions([
         '-c:v libx264',
-        `-b:v ${quality.bitrate}`,
-        '-preset ultrafast',  // Usar el preset más rápido
-        '-crf 28',  // Aumentar compresión para menor tamaño
+        '-b:v 1000k',  // Bitrate más bajo
+        '-preset superfast',
+        '-crf 32',  // Más compresión
         '-c:a aac',
-        '-b:a 128k',  // Calidad de audio estándar
+        '-b:a 64k',  // Audio de menor calidad
         '-pix_fmt yuv420p',
-        '-threads 2',  // Limitar hilos de CPU
-        '-vsync vfr',  // Sincronización de video más eficiente
-        '-cpu-used 0',  // Optimización de velocidad de codificación
+        '-threads 1',  // Solo un hilo
+        '-vsync vfr',
         '-shortest',
         '-y',
-        '-r 30',  // FPS de salida
-        '-movflags +faststart'  // Para streaming
-      ])
-      .outputFPS(30);
+        '-r 15',  // FPS más bajo
+        '-movflags +faststart',
+        '-tune stillimage'  // Optimizado para imágenes estáticas
+      ]);
 
     // Si hay música de fondo, añadirla con el volumen especificado
     if (bgMusic) {
