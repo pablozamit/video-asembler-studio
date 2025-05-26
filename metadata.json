@@ -1,0 +1,5 @@
+{
+  "name": "Video Assembler Studio",
+  "description": "A tool to select audio tracks and a background image to conceptually assemble a video. Features AI-powered image generation for backgrounds. Note: Actual MP4 video generation is a complex process typically requiring backend services and is simulated here. The app allows manual upload of assets.",
+  "requestFramePermissions": []
+}
