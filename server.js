@@ -82,6 +82,23 @@ const upload = multer({
   fileFilter
 }).any(); // Aceptar cualquier campo de archivo
 
+// Middleware para manejar errores de multer
+upload.any = function() {
+  const mw = function (req, res, next) {
+    return upload(req, res, function (err) {
+      if (err) {
+        console.error('Error en multer:', err);
+        return res.status(400).json({ 
+          error: 'Error al procesar archivos',
+          details: err.message 
+        });
+      }
+      next();
+    });
+  };
+  return mw;
+};
+
 // Ruta de verificación de estado
 app.get('/status', (req, res) => {
   res.json({ 
@@ -94,15 +111,26 @@ app.get('/status', (req, res) => {
 });
 
 // Ruta para generar el video
-app.post('/api/generate-video', upload, async (req, res) => {
-  // Validar que se hayan enviado archivos
-  if (!req.files || !req.files.length) {
-    return res.status(400).json({ 
-      error: 'No se recibieron archivos',
-      required: ['bgImage', 'voiceAudio'],
-      optional: ['bgMusic']
-    });
-  }
+app.post('/api/generate-video', (req, res) => {
+  // Middleware de multer
+  upload(req, res, async (err) => {
+    // Manejar errores de multer
+    if (err) {
+      console.error('Error en multer:', err);
+      return res.status(400).json({ 
+        error: 'Error al procesar archivos',
+        details: err.message 
+      });
+    }
+
+    // Validar que se hayan enviado archivos
+    if (!req.files || !req.files.length) {
+      return res.status(400).json({ 
+        error: 'No se recibieron archivos',
+        required: ['bgImage', 'voiceAudio'],
+        optional: ['bgMusic']
+      });
+    }
   try {
     if (!req.files || req.files.length < 2) {
       return res.status(400).json({ 
@@ -234,12 +262,14 @@ app.post('/api/generate-video', upload, async (req, res) => {
       );
     }
   } catch (error) {
-    console.error('Error en la generación de video:', error);
+    console.error('Error al generar el video:', error);
     res.status(500).json({ 
       error: 'Error al generar el video',
-      details: error.message
+      details: error.message || 'Error desconocido',
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
+  }); // Cierre del middleware de multer
 });
 
 // Endpoint de estado
