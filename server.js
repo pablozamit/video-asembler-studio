@@ -1,28 +1,48 @@
 import 'dotenv/config';
 import express from 'express';
 import multer from 'multer';
-import { v2 as cloudinary } from 'cloudinary';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { promisify } from 'util';
 import fs from 'fs';
 import cors from 'cors';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegPath from 'ffmpeg-static';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Configurar Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+// Configuración de rutas
+const uploadsDir = join(__dirname, 'uploads');
 
-const uploadToCloudinary = promisify(cloudinary.uploader.upload);
+// Asegurar que el directorio de uploads exista
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Configurar FFmpeg
+ffmpeg.setFfmpegPath(ffmpegPath);
+
 const unlinkFile = promisify(fs.unlink);
+const writeFile = promisify(fs.writeFile);
+const readFile = promisify(fs.readFile);
 
 const app = express();
 const port = process.env.PORT || 8080;
+
+// Servir archivos estáticos desde la carpeta uploads
+app.use('/uploads', express.static(uploadsDir));
+
+// Ruta para descargar archivos
+app.get('/download/:filename', (req, res) => {
+  const file = join(uploadsDir, req.params.filename);
+  res.download(file, (err) => {
+    if (err) {
+      console.error('Error al descargar el archivo:', err);
+      res.status(404).json({ error: 'Archivo no encontrado' });
+    }
+  });
+});
 
 // Configurar CORS para permitir peticiones desde cualquier origen
 app.use(cors({
@@ -51,9 +71,20 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-// Configurar multer para manejar archivos en memoria
+// Configurar almacenamiento en disco
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = file.originalname.split('.').pop();
+    cb(null, `${file.fieldname}-${uniqueSuffix}.${ext}`);
+  }
+});
+
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage,
   limits: {
     fileSize: parseInt(MAX_FILE_SIZE, 10),
     files: 3 // Máximo 3 archivos
@@ -63,7 +94,11 @@ const upload = multer({
 
 // Ruta de prueba
 app.get('/', (req, res) => {
-  res.send('API de Video Assembler Studio funcionando');
+  res.send(`
+    <h1>API de Video Assembler Studio funcionando</h1>
+    <p>Sube archivos a <code>POST /api/generate-video</code></p>
+    <p>Los videos generados estarán disponibles en <code>/uploads/</code></p>
+  `);
 });
 
 // Ruta para generar el video
@@ -134,58 +169,60 @@ app.post('/api/generate-video', upload, async (req, res) => {
       const bgImagePath = await createTempFile(bgImage.buffer, bgImage.originalname, bgImage.mimetype);
       const voiceAudioPath = await createTempFile(voiceAudio.buffer, voiceAudio.originalname, voiceAudio.mimetype);
       
-      // Subir archivos a Cloudinary
-      const [imageResult, voiceResult] = await Promise.all([
-        uploadToCloudinary(bgImagePath, {
-          resource_type: 'image',
-          folder: 'video-assembler',
-          public_id: `bg-${Date.now()}`
-        }),
-        uploadToCloudinary(voiceAudioPath, {
-          resource_type: 'video',
-          folder: 'video-assembler/audio',
-          public_id: `voice-${Date.now()}`
-        })
-      ]);
+      // Crear el comando FFmpeg
+      const outputFilename = `video-${Date.now()}.mp4`;
+      const outputPath = join(uploadsDir, outputFilename);
+      
+      const command = ffmpeg()
+        .input(join(uploadsDir, bgImage.filename))
+        .input(join(uploadsDir, voiceAudio.filename));
 
-      // Configuración para la transformación de video
-      const transformation = [
-        { width: 1280, height: 720, crop: 'fill' },
-        { overlay: `video:${voiceResult.public_id}` },
-        { flags: 'splice', audio_codec: 'aac' }
-      ];
-
-      // Si hay música de fondo, procesarla
       if (bgMusic) {
-        const bgMusicPath = await createTempFile(bgMusic.buffer, bgMusic.originalname, bgMusic.mimetype);
-        const musicResult = await uploadToCloudinary(bgMusicPath, {
-          resource_type: 'video',
-          folder: 'video-assembler/audio',
-          public_id: `music-${Date.now()}`
-        });
-
-        transformation.push(
-          { overlay: `video:${musicResult.public_id}` },
-          { flags: 'splice', audio_codec: 'aac' }
-        );
+        command.input(join(uploadsDir, bgMusic.filename))
+          .complexFilter([
+            '[1:a]volume=1.5[voice];[2:a]volume=0.3[music];[voice][music]amix=inputs=2:duration=longest[audio]'
+          ], '[audio]');
+      } else {
+        command.inputOptions(['-map', '1:a']);
       }
 
-      // Generar el video con Cloudinary
-      const videoUrl = cloudinary.url(`${imageResult.public_id}.mp4`, {
-        resource_type: 'video',
-        transformation: transformation,
-        format: 'mp4'
-      });
-
-      console.log('Video generado exitosamente:', videoUrl);
-      
-      // Responder con la URL del video generado
-      res.json({ 
-        success: true,
-        videoUrl: videoUrl,
-        message: 'Video generado exitosamente',
-        downloadUrl: videoUrl
-      });
+      command
+        .outputOptions([
+          '-c:v libx264',
+          '-pix_fmt yuv420p',
+          '-preset fast',
+          '-shortest'
+        ])
+        .save(outputPath)
+        .on('end', () => {
+          // Limpiar archivos temporales
+          const cleanupFiles = [
+            join(uploadsDir, bgImage.filename),
+            join(uploadsDir, voiceAudio.filename)
+          ];
+          
+          if (bgMusic) {
+            cleanupFiles.push(join(uploadsDir, bgMusic.filename));
+          }
+          
+          // No eliminamos el archivo de salida, lo serviremos
+          cleanupFiles.forEach(file => {
+            fs.unlink(file, err => {
+              if (err) console.error('Error al eliminar archivo temporal:', err);
+            });
+          });
+          
+          // Devolver la URL del video generado
+          res.json({ 
+            success: true,
+            videoUrl: `/uploads/${outputFilename}`,
+            downloadUrl: `/download/${outputFilename}`
+          });
+        })
+        .on('error', (err) => {
+          console.error('Error al procesar el video:', err);
+          res.status(500).json({ error: 'Error al procesar el video: ' + err.message });
+        });
     } finally {
       // Limpiar archivos temporales
       const files = await fs.promises.readdir(tempDir);
