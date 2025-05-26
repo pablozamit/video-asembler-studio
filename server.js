@@ -73,13 +73,34 @@ const storage = multer.diskStorage({
   }
 });
 
+// Configuración detallada de multer
 const upload = multer({
-  storage,
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      console.log('Destino del archivo:', uploadsDir);
+      cb(null, uploadsDir);
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = file.originalname.split('.').pop();
+      const filename = `${file.fieldname}-${uniqueSuffix}.${ext}`;
+      console.log('Guardando archivo:', filename);
+      cb(null, filename);
+    }
+  }),
   limits: {
     fileSize: parseInt(MAX_FILE_SIZE, 10),
     files: 3 // Máximo 3 archivos
   },
-  fileFilter
+  fileFilter: (req, file, cb) => {
+    console.log('Procesando archivo:', file.originalname, 'Tipo MIME:', file.mimetype);
+    if (ALLOWED_FILE_TYPES[file.mimetype]) {
+      cb(null, true);
+    } else {
+      console.error('Tipo de archivo no permitido:', file.mimetype);
+      cb(new Error(`Tipo de archivo no soportado: ${file.mimetype}`), false);
+    }
+  }
 }).any(); // Aceptar cualquier campo de archivo
 
 // Middleware para manejar errores de multer
