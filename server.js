@@ -8,6 +8,7 @@ import fs from 'fs';
 import cors from 'cors';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegPath from 'ffmpeg-static';
+import { v4 as uuidv4 } from 'uuid';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -30,26 +31,15 @@ const readFile = promisify(fs.readFile);
 const app = express();
 const port = process.env.PORT || 8080;
 
-// Servir archivos estáticos desde la carpeta uploads
-app.use('/uploads', express.static(uploadsDir));
-
-// Ruta para descargar archivos
-app.get('/download/:filename', (req, res) => {
-  const file = join(uploadsDir, req.params.filename);
-  res.download(file, (err) => {
-    if (err) {
-      console.error('Error al descargar el archivo:', err);
-      res.status(404).json({ error: 'Archivo no encontrado' });
-    }
-  });
-});
-
-// Configurar CORS para permitir peticiones desde cualquier origen
+// Configuración de CORS
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type']
 }));
+
+// Middleware para parsear JSON
+app.use(express.json({ limit: '50mb' }));
 
 // Configuración de límites y tipos de archivo permitidos
 const MAX_FILE_SIZE = process.env.MAX_FILE_SIZE || 10 * 1024 * 1024; // 10MB por defecto
@@ -92,17 +82,27 @@ const upload = multer({
   fileFilter
 }).any(); // Aceptar cualquier campo de archivo
 
-// Ruta de prueba
-app.get('/', (req, res) => {
-  res.send(`
-    <h1>API de Video Assembler Studio funcionando</h1>
-    <p>Sube archivos a <code>POST /api/generate-video</code></p>
-    <p>Los videos generados estarán disponibles en <code>/uploads/</code></p>
-  `);
+// Ruta de verificación de estado
+app.get('/status', (req, res) => {
+  res.json({ 
+    status: 'online',
+    version: '1.0.0',
+    endpoints: {
+      generateVideo: 'POST /api/generate-video'
+    }
+  });
 });
 
 // Ruta para generar el video
 app.post('/api/generate-video', upload, async (req, res) => {
+  // Validar que se hayan enviado archivos
+  if (!req.files || !req.files.length) {
+    return res.status(400).json({ 
+      error: 'No se recibieron archivos',
+      required: ['bgImage', 'voiceAudio'],
+      optional: ['bgMusic']
+    });
+  }
   try {
     if (!req.files || req.files.length < 2) {
       return res.status(400).json({ 
@@ -169,10 +169,11 @@ app.post('/api/generate-video', upload, async (req, res) => {
       const bgImagePath = await createTempFile(bgImage.buffer, bgImage.originalname, bgImage.mimetype);
       const voiceAudioPath = await createTempFile(voiceAudio.buffer, voiceAudio.originalname, voiceAudio.mimetype);
       
-      // Crear el comando FFmpeg
-      const outputFilename = `video-${Date.now()}.mp4`;
+      // Generar nombres de archivo únicos
+      const outputFilename = `video-${uuidv4()}.mp4`;
       const outputPath = join(uploadsDir, outputFilename);
       
+      // Crear comando FFmpeg
       const command = ffmpeg()
         .input(join(uploadsDir, bgImage.filename))
         .input(join(uploadsDir, voiceAudio.filename));
