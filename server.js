@@ -95,15 +95,28 @@ app.post('/api/generate-video', upload, async (req, res) => {
     
     // Configurar FFmpeg
     const command = ffmpeg()
+      // Configurar la imagen de fondo con bucle
       .input(bgImagePath)
+      .inputOptions([
+        '-loop 1',
+        '-framerate 30',
+        '-f image2'
+      ])
+      // Agregar el audio de voz
       .input(voiceAudioPath)
-      .inputOptions(['-loop 1'])
-      .outputOptions(['-c:v', 'libx264'])
-      .outputOptions(['-b:v', quality.bitrate])
-      .outputOptions(['-preset', quality.preset])
-      .outputOptions(['-c:a', 'aac'])
-      .outputOptions(['-pix_fmt', 'yuv420p'])
-      .outputOptions(['-shortest']);
+      // Configurar opciones de salida
+      .outputOptions([
+        '-c:v libx264',
+        `-b:v ${quality.bitrate}`,
+        `-preset ${quality.preset}`,
+        '-c:a aac',
+        '-pix_fmt yuv420p',
+        '-shortest',
+        '-y',
+        '-r 30',  // FPS de salida
+        '-movflags +faststart'  // Para streaming
+      ])
+      .outputFPS(30);
 
     // Si hay música de fondo, añadirla con el volumen especificado
     if (bgMusic) {
