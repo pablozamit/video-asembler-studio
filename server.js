@@ -13,60 +13,53 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = process.env.PORT || 8080;
 
-// Configurar CORS para permitir peticiones desde n8n
+// Configurar CORS para permitir peticiones desde cualquier origen
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST'],
+  methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Configurar multer para manejar archivos
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadDir = 'uploads';
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir);
-    }
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
-  }
-});
-
-const upload = multer({ 
-  storage: storage,
+// Configurar multer para manejar archivos en memoria
+const upload = multer({
+  storage: multer.memoryStorage(),
   limits: {
-    fileSize: 100 * 1024 * 1024, // 100MB límite por archivo
+    fileSize: 10 * 1024 * 1024, // 10MB máximo por archivo
+    files: 3 // Máximo 3 archivos
   }
-});
+}).any(); // Aceptar cualquier campo de archivo
 
-// Endpoint para generar video
-app.post('/api/generate-video', upload.fields([
-  { name: 'bgMusic', maxCount: 1 },
-  { name: 'voiceAudio', maxCount: 1 },
-  { name: 'bgImage', maxCount: 1 }
-]), async (req, res) => {
+// Crear directorio temporal si no existe
+const tempDir = path.join(__dirname, 'temp');
+if (!fs.existsSync(tempDir)) {
+  fs.mkdirSync(tempDir, { recursive: true });
+}
+
+// Middleware para manejar archivos subidos
+app.post('/api/generate-video', upload, async (req, res) => {
   try {
-    if (!req.files) {
+    if (!req.files || req.files.length < 2) {
       return res.status(400).json({ 
-        error: 'No se proporcionaron archivos',
+        error: 'Se requieren al menos el audio de voz y la imagen de fondo',
+        received: req.files ? req.files.map(f => f.fieldname) : 'ninguno',
         required: ['voiceAudio', 'bgImage'],
         optional: ['bgMusic']
       });
     }
 
-    const { bgMusic, voiceAudio, bgImage } = req.files;
+    // Mapear archivos recibidos
+    const files = {};
+    req.files.forEach(file => {
+      files[file.fieldname] = file;
+    });
+
+    const { bgMusic, voiceAudio, bgImage } = files;
     
     if (!voiceAudio || !bgImage) {
       return res.status(400).json({ 
         error: 'Se requieren el audio de voz y la imagen de fondo',
-        received: {
-          voiceAudio: !!voiceAudio,
-          bgImage: !!bgImage,
-          bgMusic: !!bgMusic
-        }
+        received: Object.keys(files),
+        required: ['voiceAudio', 'bgImage']
       });
     }
 
