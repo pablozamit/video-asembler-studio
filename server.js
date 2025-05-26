@@ -1,14 +1,25 @@
+import 'dotenv/config';
 import express from 'express';
 import multer from 'multer';
-import ffmpeg from 'fluent-ffmpeg';
-import path from 'path';
+import { v2 as cloudinary } from 'cloudinary';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { promisify } from 'util';
 import fs from 'fs';
 import cors from 'cors';
-import serveStatic from 'serve-static';
-import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = dirname(__filename);
+
+// Configurar Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+const uploadToCloudinary = promisify(cloudinary.uploader.upload);
+const unlinkFile = promisify(fs.unlink);
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -20,22 +31,42 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// Configuración de límites y tipos de archivo permitidos
+const MAX_FILE_SIZE = process.env.MAX_FILE_SIZE || 10 * 1024 * 1024; // 10MB por defecto
+const ALLOWED_FILE_TYPES = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/jpg': 'jpg',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+  'audio/mp3': 'mp3'
+};
+
+// Validar tipos de archivo
+const fileFilter = (req, file, cb) => {
+  if (ALLOWED_FILE_TYPES[file.mimetype]) {
+    cb(null, true);
+  } else {
+    cb(new Error(`Tipo de archivo no soportado: ${file.mimetype}`), false);
+  }
+};
+
 // Configurar multer para manejar archivos en memoria
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB máximo por archivo
+    fileSize: parseInt(MAX_FILE_SIZE, 10),
     files: 3 // Máximo 3 archivos
-  }
+  },
+  fileFilter
 }).any(); // Aceptar cualquier campo de archivo
 
-// Crear directorio temporal si no existe
-const tempDir = path.join(__dirname, 'temp');
-if (!fs.existsSync(tempDir)) {
-  fs.mkdirSync(tempDir, { recursive: true });
-}
+// Ruta de prueba
+app.get('/', (req, res) => {
+  res.send('API de Video Assembler Studio funcionando');
+});
 
-// Middleware para manejar archivos subidos
+// Ruta para generar el video
 app.post('/api/generate-video', upload, async (req, res) => {
   try {
     if (!req.files || req.files.length < 2) {
@@ -47,13 +78,19 @@ app.post('/api/generate-video', upload, async (req, res) => {
       });
     }
 
-    // Mapear archivos recibidos
+    // Mapear archivos recibidos y validar
     const files = {};
     req.files.forEach(file => {
-      files[file.fieldname] = file;
+      if (!ALLOWED_FILE_TYPES[file.mimetype]) {
+        throw new Error(`Tipo de archivo no permitido: ${file.originalname} (${file.mimetype})`);
+      }
+      files[file.fieldname.trim()] = file;
     });
 
-    const { bgMusic, voiceAudio, bgImage } = files;
+    // Obtener archivos con manejo de espacios en blanco
+    const bgMusic = files['bgMusic'] || files['bgMusic '];
+    const voiceAudio = files['voiceAudio'] || files['voiceAudio '];
+    const bgImage = files['bgImage'] || files['bgImage '];
     
     if (!voiceAudio || !bgImage) {
       return res.status(400).json({ 
@@ -63,166 +100,105 @@ app.post('/api/generate-video', upload, async (req, res) => {
       });
     }
 
-    // Obtener parámetros opcionales
-    const outputFormat = req.body.format || 'mp4';
-    const videoQuality = req.body.quality || 'medium'; // low, medium, high
-    const audioVolume = req.body.audioVolume || '1.0'; // Volumen del audio (0.0 a 2.0)
-    const musicVolumeRatio = req.body.musicVolumeRatio || '0.2'; // Ratio de volumen de la música respecto a la voz (0.0 a 1.0)
-
-    const outputPath = path.join('uploads', `video-${Date.now()}.${outputFormat}`);
+    console.log('Iniciando proceso de generación de video...');
+    console.log(`Tamaño máximo de archivo: ${MAX_FILE_SIZE / (1024 * 1024)}MB`);
     
-    // Configurar calidad de video según el parámetro
-    const videoQualitySettings = {
-      low: { bitrate: '1000k', preset: 'ultrafast' },
-      medium: { bitrate: '2000k', preset: 'medium' },
-      high: { bitrate: '4000k', preset: 'slow' }
-    };
-
-    const quality = videoQualitySettings[videoQuality] || videoQualitySettings.medium;
-    
-    // Crear archivos temporales para FFmpeg
-    const tempFiles = [];
-    const createTempFile = (buffer, ext) => {
-      const tempPath = path.join(tempDir, `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.${ext}`);
-      fs.writeFileSync(tempPath, buffer);
-      tempFiles.push(tempPath);
-      return tempPath;
-    };
-
-    // Crear archivos temporales
-    const bgImagePath = createTempFile(bgImage.buffer, path.extname(bgImage.originalname).substring(1) || 'png');
-    const voiceAudioPath = createTempFile(voiceAudio.buffer, path.extname(voiceAudio.originalname).substring(1) || 'mp3');
-    
-    // Configuración ultra ligera para Render
-    const command = ffmpeg()
-      // Usar la imagen como fondo con bucle
-      .input(bgImagePath)
-      .inputOptions([
-        '-loop 1',
-        '-framerate 1',
-        '-f image2'
-      ])
-      // Agregar el audio de voz
-      .input(voiceAudioPath)
-      // Configuración de salida mínima
-      .outputOptions([
-        '-c:v libx264',
-        '-b:v 1000k',  // Bitrate más bajo
-        '-preset superfast',
-        '-crf 32',  // Más compresión
-        '-c:a aac',
-        '-b:a 64k',  // Audio de menor calidad
-        '-pix_fmt yuv420p',
-        '-threads 1',  // Solo un hilo
-        '-vsync vfr',
-        '-shortest',
-        '-y',
-        '-r 15',  // FPS más bajo
-        '-movflags +faststart',
-        '-tune stillimage'  // Optimizado para imágenes estáticas
-      ]);
-
-    // Si hay música de fondo, añadirla con el volumen especificado
-    if (bgMusic) {
-      const bgMusicPath = createTempFile(bgMusic.buffer, path.extname(bgMusic.originalname).substring(1) || 'mp3');
-      command.input(bgMusicPath)
-        .outputOptions([
-          '-filter_complex',
-          `[1:a]volume=${audioVolume}[voice];[2:a]volume=${audioVolume * musicVolumeRatio}[music];[voice][music]amix=inputs=2:duration=longest`
-        ]);
+    // Crear directorio temporal seguro
+    const tempDir = join(__dirname, 'temp');
+    try {
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true, mode: 0o755 });
+      }
+    } catch (error) {
+      console.error('Error al crear directorio temporal:', error);
+      throw new Error('No se pudo crear el directorio temporal');
     }
 
-    // Función para limpiar archivos temporales
-    const cleanupTempFiles = () => {
-      tempFiles.forEach(file => {
-        try {
-          if (fs.existsSync(file)) {
-            fs.unlinkSync(file);
-          }
-        } catch (e) {
-          console.error('Error al eliminar archivo temporal:', e);
-        }
-      });
+    // Función segura para crear archivos temporales
+    const createTempFile = async (buffer, originalName, fileType) => {
+      const ext = ALLOWED_FILE_TYPES[fileType] || 'bin';
+      const tempPath = join(tempDir, `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.${ext}`);
+      
+      try {
+        await fs.promises.writeFile(tempPath, buffer);
+        console.log(`Archivo temporal creado: ${tempPath} (${(buffer.length / (1024 * 1024)).toFixed(2)}MB)`);
+        return tempPath;
+      } catch (error) {
+        console.error('Error al crear archivo temporal:', error);
+        throw new Error('Error al procesar el archivo');
+      }
     };
 
-    // Configurar manejadores de eventos
-    command
-      .on('start', (commandLine) => {
-        console.log('Iniciando generación de video:', commandLine);
-      })
-      .on('progress', (progress) => {
-        console.log('Progreso:', progress.percent, '%');
-      })
-      .on('end', () => {
-        console.log('Video generado exitosamente');
-        // Enviar el video generado
-        res.download(outputPath, `video.${outputFormat}`, (err) => {
-          // Limpiar archivos temporales
-          cleanupTempFiles();
-          if (err) {
-            console.error('Error al enviar el archivo:', err);
-          }
-          // Eliminar el archivo de salida
-          try {
-            if (fs.existsSync(outputPath)) {
-              fs.unlinkSync(outputPath);
-            }
-          } catch (e) {
-            console.error('Error al eliminar archivo de salida:', e);
-          }
+    try {
+      // Crear archivos temporales con sus tipos MIME
+      const bgImagePath = await createTempFile(bgImage.buffer, bgImage.originalname, bgImage.mimetype);
+      const voiceAudioPath = await createTempFile(voiceAudio.buffer, voiceAudio.originalname, voiceAudio.mimetype);
+      
+      // Subir archivos a Cloudinary
+      const [imageResult, voiceResult] = await Promise.all([
+        uploadToCloudinary(bgImagePath, {
+          resource_type: 'image',
+          folder: 'video-assembler',
+          public_id: `bg-${Date.now()}`
+        }),
+        uploadToCloudinary(voiceAudioPath, {
+          resource_type: 'video',
+          folder: 'video-assembler/audio',
+          public_id: `voice-${Date.now()}`
+        })
+      ]);
+
+      // Configuración para la transformación de video
+      const transformation = [
+        { width: 1280, height: 720, crop: 'fill' },
+        { overlay: `video:${voiceResult.public_id}` },
+        { flags: 'splice', audio_codec: 'aac' }
+      ];
+
+      // Si hay música de fondo, procesarla
+      if (bgMusic) {
+        const bgMusicPath = await createTempFile(bgMusic.buffer, bgMusic.originalname, bgMusic.mimetype);
+        const musicResult = await uploadToCloudinary(bgMusicPath, {
+          resource_type: 'video',
+          folder: 'video-assembler/audio',
+          public_id: `music-${Date.now()}`
         });
-      })
-      .on('error', (err) => {
-        console.error('Error al generar el video:', err);
-        cleanupTempFiles();
-        res.status(500).json({ 
-          error: 'Error al generar el video',
-          details: err.message
-        });
+
+        transformation.push(
+          { overlay: `video:${musicResult.public_id}` },
+          { flags: 'splice', audio_codec: 'aac' }
+        );
+      }
+
+      // Generar el video con Cloudinary
+      const videoUrl = cloudinary.url(`${imageResult.public_id}.mp4`, {
+        resource_type: 'video',
+        transformation: transformation,
+        format: 'mp4'
       });
 
-    // Iniciar la generación del video
-    command.save(outputPath);
-
-    command.save(outputPath)
-      .on('start', (commandLine) => {
-        console.log('Iniciando generación de video:', commandLine);
-      })
-      .on('progress', (progress) => {
-        console.log('Progreso:', progress.percent, '%');
-      })
-      .on('end', () => {
-        console.log('Video generado exitosamente');
-        // Enviar el video generado
-        res.download(outputPath, `video.${outputFormat}`, (err) => {
-          if (err) {
-            console.error('Error al enviar el archivo:', err);
-          }
-          // Limpiar archivos temporales
-          try {
-            fs.unlinkSync(outputPath);
-            fs.unlinkSync(bgImage[0].path);
-            fs.unlinkSync(voiceAudio[0].path);
-            if (bgMusic) {
-              fs.unlinkSync(bgMusic[0].path);
-            }
-          } catch (cleanupError) {
-            console.error('Error al limpiar archivos temporales:', cleanupError);
-          }
-        });
-      })
-      .on('error', (err) => {
-        console.error('Error al generar el video:', err);
-        res.status(500).json({ 
-          error: 'Error al generar el video',
-          details: err.message
-        });
+      console.log('Video generado exitosamente:', videoUrl);
+      
+      // Responder con la URL del video generado
+      res.json({ 
+        success: true,
+        videoUrl: videoUrl,
+        message: 'Video generado exitosamente',
+        downloadUrl: videoUrl
       });
-
+    } finally {
+      // Limpiar archivos temporales
+      const files = await fs.promises.readdir(tempDir);
+      await Promise.all(
+        files.map(file => 
+          fs.promises.unlink(join(tempDir, file)).catch(console.error)
+        )
+      );
+    }
   } catch (error) {
-    console.error('Error en el servidor:', error);
+    console.error('Error en la generación de video:', error);
     res.status(500).json({ 
-      error: 'Error interno del servidor',
+      error: 'Error al generar el video',
       details: error.message
     });
   }
@@ -242,11 +218,11 @@ app.get('/api/status', (req, res) => {
 
 // Servir archivos estáticos del frontend
 if (process.env.NODE_ENV === 'production') {
-  app.use(serveStatic(path.join(__dirname, 'dist')));
+  app.use(express.static(join(__dirname, 'dist')));
   
   // Para cualquier ruta no manejada, servir index.html
   app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    res.sendFile(join(__dirname, 'dist', 'index.html'));
   });
 }
 
