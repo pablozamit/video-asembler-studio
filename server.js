@@ -93,24 +93,33 @@ app.post('/api/generate-video', upload, async (req, res) => {
     const bgImagePath = createTempFile(bgImage.buffer, path.extname(bgImage.originalname).substring(1) || 'png');
     const voiceAudioPath = createTempFile(voiceAudio.buffer, path.extname(voiceAudio.originalname).substring(1) || 'mp3');
     
-    // Configurar FFmpeg
+    // Configurar FFmpeg con opciones optimizadas
     const command = ffmpeg()
-      // Configurar la imagen de fondo con bucle
+      // Configurar la imagen de fondo
       .input(bgImagePath)
       .inputOptions([
         '-loop 1',
-        '-framerate 30',
-        '-f image2'
+        '-framerate 1',  // Reducir el framerate de entrada
+        '-f image2',
+        '-thread_queue_size 512'  // Reducir el tamaño de la cola
       ])
       // Agregar el audio de voz
       .input(voiceAudioPath)
-      // Configurar opciones de salida
+      .inputOptions([
+        '-thread_queue_size 512'
+      ])
+      // Configurar opciones de salida optimizadas
       .outputOptions([
         '-c:v libx264',
         `-b:v ${quality.bitrate}`,
-        `-preset ${quality.preset}`,
+        '-preset ultrafast',  // Usar el preset más rápido
+        '-crf 28',  // Aumentar compresión para menor tamaño
         '-c:a aac',
+        '-b:a 128k',  // Calidad de audio estándar
         '-pix_fmt yuv420p',
+        '-threads 2',  // Limitar hilos de CPU
+        '-vsync vfr',  // Sincronización de video más eficiente
+        '-cpu-used 0',  // Optimización de velocidad de codificación
         '-shortest',
         '-y',
         '-r 30',  // FPS de salida
