@@ -76,3 +76,121 @@ Para integrar con n8n, puedes usar el nodo "HTTP Request" con la siguiente confi
    - bgImage: [Archivo JPG/PNG]
 
 El nodo devolverá el archivo MP4 generado que puedes guardar o procesar según tus necesidades.
+
+---
+
+## API Usage
+
+### `POST /api/generate-video`
+
+This endpoint allows you to generate an MP4 video by combining a voice audio track, a background image, and an optional background music track. Files are sourced from publicly accessible Google Drive URLs.
+
+**Request Body:** `application/json`
+
+```json
+{
+  "urlVoz": "YOUR_GOOGLE_DRIVE_VOICE_AUDIO_URL",
+  "urlImagen": "YOUR_GOOGLE_DRIVE_IMAGE_URL",
+  "urlMusica": "YOUR_GOOGLE_DRIVE_MUSIC_AUDIO_URL" // Optional
+}
+```
+
+**Parameters:**
+
+*   `urlVoz` (string, required): A publicly accessible Google Drive URL for the voice audio file (e.g., MP3, WAV).
+*   `urlImagen` (string, required): A publicly accessible Google Drive URL for the background image (e.g., JPG, PNG).
+*   `urlMusica` (string, optional): A publicly accessible Google Drive URL for the background music file. If provided, it will be mixed with the voice audio. The background music volume is automatically lowered to ensure the voice is clear.
+
+**Success Response:**
+
+*   **Status Code:** `200 OK`
+*   **Body:**
+    ```json
+    {
+      "success": true,
+      "videoUrl": "/uploads/video-GENERATED_UUID.mp4",
+      "downloadUrl": "/download/GENERATED_UUID.mp4"
+    }
+    ```
+    *   `videoUrl`: A URL path from which the generated video can be streamed or accessed if the server is configured to serve static files from the `uploads` directory.
+    *   `downloadUrl`: (This might be a conceptual URL or may need a dedicated download endpoint if `/uploads` isn't directly browsable/servable for downloads). *Developer Note: The current `server.js` does not have an explicit `/download/:filename` route, so `videoUrl` is the primary way to access the file if static serving from `/uploads` is enabled.*
+
+**Error Responses:**
+
+*   **Status Code:** `400 Bad Request`
+    *   If required fields (`urlVoz`, `urlImagen`) are missing.
+    *   Example: `{"error": "Missing required URLs: urlVoz and urlImagen are required."}`
+*   **Status Code:** `500 Internal Server Error`
+    *   If there's an issue downloading files from the provided Google Drive URLs (e.g., URL is invalid, file not found, not publicly accessible).
+    *   Example: `{"error": "Failed to download one or more files from Google Drive.", "details": "..."}`
+    *   If FFmpeg encounters an error during video processing.
+    *   Example: `{"error": "Error processing video", "details": "ffmpeg error message..."}`
+
+**Notes:**
+
+*   Ensure that the Google Drive links provided are set to "Anyone with the link can view" to allow the server to download them.
+*   The server will temporarily download the files, process them, and then delete these temporary copies. The final generated video is stored in the `uploads` directory on the server.
+
+---
+---
+
+## Using with n8n
+
+You can easily integrate this video generation API into your n8n workflows using the "HTTP Request" node.
+
+**Workflow Example:**
+
+A common workflow might involve:
+1.  **Trigger Node:** (e.g., Webhook, Cron, Manual execution) to start the process.
+2.  **Set Node (Optional):** To define the Google Drive URLs for your voice, image, and music files. Alternatively, these URLs could come from previous steps in your workflow (like a Google Sheet node, a form submission, etc.).
+3.  **HTTP Request Node:** To call this API.
+4.  **Handling Node (Optional):** To do something with the generated video URL (e.g., send an email, save to a database, pass to another service).
+
+**HTTP Request Node Configuration:**
+
+*   **Method:** `POST`
+*   **URL:** `YOUR_SERVER_ADDRESS/api/generate-video` (e.g., `http://localhost:8080/api/generate-video` if running locally, or your production server URL)
+*   **Authentication:** `None` (assuming no authentication is set up on the API endpoint itself)
+*   **Send Body:** `true` (toggle on)
+*   **Body Content Type:** `JSON`
+*   **JSON Parameters:** `true` (toggle on) or use "Add Expression" for the body.
+
+**Body / Parameters:**
+
+Click on "Add Parameter" under JSON Parameters, or construct the JSON body using an expression.
+
+*   **Key `urlVoz`**: Value should be an n8n expression pointing to your voice audio URL.
+    *   Example: `{{ $json.voice_audio_url }}` or `{{ $('Set URLs').item.json.voice_url }}`
+*   **Key `urlImagen`**: Value should be an n8n expression pointing to your background image URL.
+    *   Example: `{{ $json.background_image_url }}`
+*   **Key `urlMusica`** (Optional): Value should be an n8n expression pointing to your background music URL.
+    *   Example: `{{ $json.background_music_url }}`
+
+**Example JSON Body using "Expression" mode for the Body:**
+
+```json
+{
+  "urlVoz": "{{ $('Set URLs').item.json.voice_url }}",
+  "urlImagen": "{{ $('Set URLs').item.json.image_url }}",
+  "urlMusica": "{{ $('Set URLs').item.json.music_url }}"
+}
+```
+*(Adjust the expression `$('Set URLs').item.json.variable_name` based on the actual name of your node providing the URLs and how you're accessing the data.)*
+
+**Options (under HTTP Request Node):**
+
+*   **Response Format:** `JSON`
+*   **Ignore Response Code:** You might want to keep this off initially to ensure you catch errors. The API returns `200 OK` on success.
+
+**Accessing the Output:**
+
+If the API call is successful, the HTTP Request node will output JSON containing `videoUrl` and `downloadUrl`. You can use these in subsequent nodes. For example, to get the video URL:
+
+`{{ $('HTTP Request').item.json.videoUrl }}` (assuming your HTTP Request node is named "HTTP Request").
+
+**Error Handling:**
+
+*   If the API returns an error (e.g., 400 or 500), the HTTP Request node will fail by default (unless "Continue on Fail" is enabled in its settings). You can inspect the error details in the output of the failed node.
+*   Consider adding error handling branches in your n8n workflow based on the success or failure of the HTTP Request node.
+
+---
